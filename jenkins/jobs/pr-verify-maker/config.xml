@@ -1,0 +1,101 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<project>
+  <actions/>
+  <description></description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <hudson.model.ParametersDefinitionProperty>
+      <parameterDefinitions>
+        <hudson.model.StringParameterDefinition>
+          <name>repository</name>
+          <description>The Stash HTTPS repository endpoint that should be monitored for PR requests to verify and/or publish. Make sure to just include the URL without the username.</description>
+          <defaultValue></defaultValue>
+        </hudson.model.StringParameterDefinition>
+        <com.cloudbees.plugins.credentials.CredentialsParameterDefinition plugin="credentials@1.18">
+          <name>stashcredentials</name>
+          <description>The username/password pair that will be used to clone the repository, monitor for PR requests by polling Stash API, and commenting on status of verifications and publications.</description>
+          <defaultValue></defaultValue>
+          <credentialType>com.cloudbees.plugins.credentials.impl.UsernamePasswordCredentialsImpl</credentialType>
+          <required>true</required>
+        </com.cloudbees.plugins.credentials.CredentialsParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>jenkinsusername</name>
+          <description>The username that will be used to make a POST request to create verification and publication jobs.</description>
+          <defaultValue></defaultValue>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.PasswordParameterDefinition>
+          <name>jenkinspassword</name>
+          <description>The password corresponding to the above username for making POST request to generate verification and publication jobs.</description>
+          <defaultValue>KmWwxO24niR6g/JpwO9xAedqH4qPOteYjnTtns2NP/DUwwCY6kbp4vsdGNtFy8LO</defaultValue>
+        </hudson.model.PasswordParameterDefinition>
+        <com.cloudbees.plugins.credentials.CredentialsParameterDefinition plugin="credentials@1.18">
+          <name>jenkinscredentials</name>
+          <description>The PR watcher job needs to know these because it will trigger a verify job whenever it sees a new PR.</description>
+          <defaultValue></defaultValue>
+          <credentialType>com.cloudbees.plugins.credentials.impl.UsernamePasswordCredentialsImpl</credentialType>
+          <required>true</required>
+        </com.cloudbees.plugins.credentials.CredentialsParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>jenkinsport</name>
+          <description>The port that Jenkins server is listening on. Because of firewall rules the default port (8080) might not be available so specify another port if that is the case.</description>
+          <defaultValue>8080</defaultValue>
+        </hudson.model.StringParameterDefinition>
+      </parameterDefinitions>
+    </hudson.model.ParametersDefinitionProperty>
+  </properties>
+  <scm class="hudson.scm.NullSCM"/>
+  <canRoam>true</canRoam>
+  <disabled>false</disabled>
+  <blockBuildWhenDownstreamBuilding>false</blockBuildWhenDownstreamBuilding>
+  <blockBuildWhenUpstreamBuilding>false</blockBuildWhenUpstreamBuilding>
+  <triggers/>
+  <concurrentBuild>false</concurrentBuild>
+  <builders>
+    <hudson.tasks.Shell>
+      <command>#!/bin/bash
+set -x
+pr_watcher_template=&quot;$JENKINS_HOME/pr-watcher-template.xml&quot;
+verify_template=&quot;$JENKINS_HOME/verify-template.xml&quot;
+if [[ ! -e $pr_watcher_template ]]; then
+  echo &quot;Need pr-watcher-template.xml to be at $pr_watcher_template&quot;
+  exit 1
+fi
+if [[ ! -e $verify_template ]]; then
+  echo &quot;Need verify-template.xml to be at $verify_template&quot;
+  exit 1
+fi
+# Now that we know we have the templates we can use it to create the jobs
+# 1) Generate job configs for POSTing, $project-$repo-pr-watcher.xml and $project-$repo-verify.xml
+# 2) Make sure the credential IDs are correctly set
+# 3) POST the modified XML job configurations to create the jobs
+
+repo=$(echo &quot;${repository}&quot; | awk -F/ &apos;{print $(NF)}&apos; | sed &apos;s/.git//&apos;)
+project=$(echo &quot;${repository}&quot; | awk -F/ &apos;{print $(NF-1)}&apos;)
+pr_watcher=&quot;${project}-${repo}-pr-watcher&quot;
+verify=&quot;${project}-${repo}-verify&quot;
+
+# Generate job configs
+cat $pr_watcher_template | \
+  sed &quot;s|{repo}|${repository}|&quot; | \
+  sed &quot;s|{repo-creds-id}|${stashcredentials}|&quot; | \
+  sed &quot;s|{stash-creds-id}|${stashcredentials}|&quot; | \
+  sed &quot;s|{jenkins-creds-id}|${jenkinscredentials}|&quot; | \
+  sed &quot;s|{jenkinsport}|${jenkinsport}|&quot; &gt; &quot;${pr_watcher}.xml&quot;
+cat $verify_template | \
+  sed &quot;s|{repo}|${repository}|&quot; | \
+  sed &quot;s|{repo-creds-id}|${stashcredentials}|&quot; | \
+  sed &quot;s|{stash-creds-id}|${stashcredentials}|&quot; | \
+  sed &quot;s|{jenkinsport}|${jenkinsport}|&quot; &gt; &quot;${verify}.xml&quot;
+
+# POST job configs
+curl -s -k -u &quot;${jenkinsusername}&quot;:&quot;${jenkinspassword}&quot; -X POST -H &quot;Content-Type: application/xml&quot; --data-binary @${pr_watcher}.xml &quot;${HOSTNAME}:${jenkinsport}/createItem?name=${pr_watcher}&quot;
+curl -s -k -u &quot;${jenkinsusername}&quot;:&quot;${jenkinspassword}&quot; -X POST -H &quot;Content-Type: application/xml&quot; --data-binary @${verify}.xml &quot;${HOSTNAME}:${jenkinsport}/createItem?name=${verify}&quot;
+
+# Remove temporary templates
+rm -f &quot;${pr_watcher}.xml&quot;
+rm -f &quot;${verify}.xml&quot;</command>
+    </hudson.tasks.Shell>
+  </builders>
+  <publishers/>
+  <buildWrappers/>
+</project>

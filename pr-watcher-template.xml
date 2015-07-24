@@ -1,0 +1,115 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<project>
+  <actions/>
+  <description></description>
+  <logRotator class="hudson.tasks.LogRotator">
+    <daysToKeep>-1</daysToKeep>
+    <numToKeep>50</numToKeep>
+    <artifactDaysToKeep>-1</artifactDaysToKeep>
+    <artifactNumToKeep>50</artifactNumToKeep>
+  </logRotator>
+  <keepDependencies>false</keepDependencies>
+  <properties/>
+  <scm class="hudson.plugins.git.GitSCM" plugin="git@2.3.5">
+    <configVersion>2</configVersion>
+    <userRemoteConfigs>
+      <hudson.plugins.git.UserRemoteConfig>
+        <url>{repo}</url>
+        <credentialsId>{repo-creds-id}</credentialsId>
+      </hudson.plugins.git.UserRemoteConfig>
+    </userRemoteConfigs>
+    <branches>
+      <hudson.plugins.git.BranchSpec>
+        <name>**</name>
+      </hudson.plugins.git.BranchSpec>
+    </branches>
+    <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>
+    <submoduleCfg class="list"/>
+    <extensions/>
+  </scm>
+  <canRoam>true</canRoam>
+  <disabled>false</disabled>
+  <blockBuildWhenDownstreamBuilding>false</blockBuildWhenDownstreamBuilding>
+  <blockBuildWhenUpstreamBuilding>false</blockBuildWhenUpstreamBuilding>
+  <triggers>
+    <hudson.triggers.TimerTrigger>
+      <spec>H/5 * * * *</spec>
+    </hudson.triggers.TimerTrigger>
+  </triggers>
+  <concurrentBuild>false</concurrentBuild>
+  <builders>
+    <hudson.tasks.Shell>
+      <command>#!/bin/bash
+# Set up some options
+set +e
+set +x
+set +H
+queue_size=$(curl -s -u &quot;${jenkinsuser}&quot;:&quot;${jenkinsuserpassword}&quot; ${HOSTNAME}:{jenkinsport}/queue/api/json | jq &apos;.items | length&apos;)
+if [[ &quot;${queue_size}&quot; -ne 0 ]]; then
+  echo &quot;Queue size is larger than 0 so giving it some time to clear&quot;
+  exit
+fi
+git reset --hard
+git clean -xfd
+origin_url=$(git remote -v | grep origin | grep fetch | awk &apos;{print $2}&apos;)
+project=$(echo $origin_url | awk -F/ &apos;{print $(NF-1)}&apos;)
+stash_repo=$(echo $origin_url | awk -F/ &apos;{print $(NF)}&apos; | sed &apos;s/.git//g&apos;)
+stash_url=$(echo $origin_url | sed &apos;s|/scm/.*$||&apos;)
+api_url=&quot;${stash_url}/rest/api/1.0/projects/${project}/repos/${stash_repo}&quot;
+# Debug output
+echo &quot;Project: &quot; $project
+echo &quot;Repo: &quot; $repo
+echo &quot;Stash URL: &quot; $stash_url
+echo &quot;API URL: &quot; $api_url
+# Assume jq binary will be available
+if [[ ! $(which jq) ]]; then
+  echo &quot;Need jq to be available in path&quot;
+  exit 1
+fi
+# Grab the raw data
+curl -s -k -u &quot;${stashuser}&quot;:&quot;${stashuserpassword}&quot; &quot;${api_url}/pull-requests&quot; &gt; raw-pr-data 
+# Filter it down to the IDs and iterate to grab the ref we want to kick off jobs for
+for pr_id in $(cat raw-pr-data | jq &apos;.values[] | .id&apos;); do
+  (
+  echo &quot;PR id: ${pr_id}&quot;
+  git_ref=$(curl -s -k -u &quot;${stashuser}&quot;:&quot;${stashuserpassword}&quot; &quot;${api_url}/pull-requests/${pr_id}&quot; | jq &apos;.fromRef.latestChangeset&apos; | grep -v null | sed &apos;s/&quot;//g&apos;)
+  marker=&quot;VERIFYING ${git_ref}&quot;
+  echo &quot;Marker: ${marker}&quot;
+  echo &quot;Git ref: ${git_ref}&quot;
+  # See if we have already added the links for this ref in a comment
+  for comment_id in $(curl -s -k -u &quot;${stashuser}&quot;:&quot;${stashuserpassword}&quot; &quot;${api_url}/pull-requests/${pr_id}/activities&quot; | jq &apos;.values[] | .comment.id&apos; | grep -v null); do
+    echo &quot;Comment id: ${comment_id}&quot;
+    # Get the comment data and see if we have already posted links
+    if [[ $(curl -s -k -u &quot;${stashuser}&quot;:&quot;${stashuserpassword}&quot; &quot;${api_url}/pull-requests/${pr_id}/comments/${comment_id}&quot; | jq &apos;.text&apos; | grep -v null | grep &quot;${marker}&quot;) ]]; then
+      echo &quot;Found marker so nothing to do&quot;
+      exit
+    fi
+  done
+  comment_url=&quot;${api_url}/pull-requests/${pr_id}/comments&quot;
+  echo {\&quot;text\&quot;:\&quot;${marker}\&quot;} &gt; commentdata
+  # Queue parametrized job to do a verification
+  curl -s -k -X POST -u &quot;${jenkinsuser}&quot;:&quot;${jenkinsuserpassword}&quot; --data token=trigger --data ref=&quot;${git_ref}&quot; --data pr_id=&quot;${pr_id}&quot; \
+  ${HOSTNAME}:{jenkinsport}/job/${project}-${stash_repo}-verify/buildWithParameters
+  rm -f commentdata
+  )
+done</command>
+    </hudson.tasks.Shell>
+  </builders>
+  <publishers/>
+  <buildWrappers>
+    <org.jenkinsci.plugins.credentialsbinding.impl.SecretBuildWrapper plugin="credentials-binding@1.4">
+      <bindings>
+        <org.jenkinsci.plugins.credentialsbinding.impl.UsernamePasswordMultiBinding>
+          <credentialsId>{stash-creds-id}</credentialsId>
+          <usernameVariable>stashuser</usernameVariable>
+          <passwordVariable>stashuserpassword</passwordVariable>
+        </org.jenkinsci.plugins.credentialsbinding.impl.UsernamePasswordMultiBinding>
+        <org.jenkinsci.plugins.credentialsbinding.impl.UsernamePasswordMultiBinding>
+          <credentialsId>{jenkins-creds-id}</credentialsId>
+          <usernameVariable>jenkinsuser</usernameVariable>
+          <passwordVariable>jenkinsuserpassword</passwordVariable>
+        </org.jenkinsci.plugins.credentialsbinding.impl.UsernamePasswordMultiBinding>
+      </bindings>
+    </org.jenkinsci.plugins.credentialsbinding.impl.SecretBuildWrapper>
+  </buildWrappers>
+</project>
